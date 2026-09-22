@@ -1,5 +1,7 @@
 "use client";
 
+// Form state, submit events, and useRouter require a client boundary.
+
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -11,7 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { signIn, signUp } from "@/lib/auth/auth-client";
+import { signIn } from "@/lib/auth/auth-client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -40,9 +42,10 @@ export default function SignIn() {
       if (result.error) {
         setError(result.error.message ?? "Failed to sign in");
       } else {
+        // Navigation is UX, not authorization; protected server entry points must verify the session.
         router.push("/dashboard");
       }
-    } catch (err) {
+    } catch {
       setError("An unexpected error occurred");
     } finally {
       setLoading(false);
@@ -63,7 +66,10 @@ export default function SignIn() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <CardContent className="space-y-4">
             {error && (
-              <div className="rounded-md bg-destructive/15 p-3 text-sm text-destructive">
+              <div
+                role="alert"
+                className="rounded-md bg-destructive/15 p-3 text-sm text-destructive"
+              >
                 {error}
               </div>
             )}
@@ -105,7 +111,7 @@ export default function SignIn() {
               {loading ? "Signing in..." : "Sign In"}
             </Button>
             <p className="text-center text-sm text-gray-600">
-              Don't have an account?{" "}
+              Don&apos;t have an account?{" "}
               <Link
                 href="/sign-up"
                 className="font-medium text-primary hover:underline"

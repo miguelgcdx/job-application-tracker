@@ -1,12 +1,18 @@
 "use client";
 
+/**
+ * Interactive Kanban view: translates pointer drops into column/order intent.
+ * Client execution is required for drag sensors, event handlers, and local state;
+ * useBoard owns the UI projection, while the server action owns the mutation
+ * boundary for persistence and security checks.
+ */
+
 import { Board, Column, JobApplication } from "@/lib/models/models.types";
 import {
   Award,
   Calendar,
   CheckCircle2,
   Mic,
-  MoreHorizontal,
   MoreVertical,
   Trash2,
   XCircle,
@@ -43,7 +49,6 @@ import { useState } from "react";
 
 interface KanbanBoardProps {
   board: Board;
-  userId: string;
 }
 
 interface ColConfig {
@@ -73,6 +78,7 @@ const COLUMN_CONFIG: Array<ColConfig> = [
   },
 ];
 
+/** Registers a column-level drop target, including when empty, and its sortable job list. */
 function DroppableColumn({
   column,
   config,
@@ -92,8 +98,10 @@ function DroppableColumn({
     },
   });
 
-  const sortedJobs =
-    column.jobApplications?.sort((a, b) => a.order - b.order) || [];
+  // sort mutates its input; clone so rendering never reorders the shared job array.
+  const sortedJobs = [...column.jobApplications].sort(
+    (a, b) => a.order - b.order
+  );
   return (
     <Card className="min-w-[300px] flex-shrink-0 shadow-md p-0">
       <CardHeader
@@ -136,9 +144,9 @@ function DroppableColumn({
           items={sortedJobs.map((job) => job._id)}
           strategy={verticalListSortingStrategy}
         >
-          {sortedJobs.map((job, key) => (
+          {sortedJobs.map((job) => (
             <SortableJobCard
-              key={key}
+              key={job._id}
               job={{ ...job, columnId: job.columnId || column._id }}
               columns={sortedColumns}
             />
@@ -151,6 +159,7 @@ function DroppableColumn({
   );
 }
 
+/** Connects sortable positioning to drag bindings that JobApplicationCard attaches to the whole card. */
 function SortableJobCard({
   job,
   columns,
@@ -189,15 +198,17 @@ function SortableJobCard({
   );
 }
 
-export default function KanbanBoard({ board, userId }: KanbanBoardProps) {
+export default function KanbanBoard({ board }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
-  const { columns, moveJob } = useBoard(board);
+  const { columns, error, moveJob } = useBoard(board);
 
-  const sortedColumns = columns?.sort((a, b) => a.order - b.order) || [];
+  // Keep the hook's column array intact; cloned job sorts below protect it likewise.
+  const sortedColumns = [...columns].sort((a, b) => a.order - b.order);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
+        // Require deliberate movement so small pointer motions do not start a drag.
         distance: 8,
       },
     })
@@ -207,6 +218,7 @@ export default function KanbanBoard({ board, userId }: KanbanBoardProps) {
     setActiveId(event.active.id as string);
   }
 
+  /** Resolves the drop against displayed order, then delegates the requested move to useBoard. */
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
 
@@ -222,8 +234,9 @@ export default function KanbanBoard({ board, userId }: KanbanBoardProps) {
     let sourceIndex = -1;
 
     for (const column of sortedColumns) {
-      const jobs =
-        column.jobApplications.sort((a, b) => a.order - b.order) || [];
+      const jobs = [...column.jobApplications].sort(
+        (a, b) => a.order - b.order
+      );
       const jobIndex = jobs.findIndex((j) => j._id === activeId);
       if (jobIndex !== -1) {
         draggedJob = jobs[jobIndex];
@@ -235,7 +248,7 @@ export default function KanbanBoard({ board, userId }: KanbanBoardProps) {
 
     if (!draggedJob || !sourceColumn) return;
 
-    // Check if dropped in a column or another job
+    // The collision ID can name either: a column means append; a job anchors insertion.
     const targetColumn = sortedColumns.find((col) => col._id === overId);
     const targetJob = sortedColumns
       .flatMap((col) => col.jobApplications || [])
@@ -264,8 +277,9 @@ export default function KanbanBoard({ board, userId }: KanbanBoardProps) {
 
       if (!targetColumnObj) return;
 
-      const allJobsInTargetOriginal =
-        targetColumnObj.jobApplications.sort((a, b) => a.order - b.order) || [];
+      const allJobsInTargetOriginal = [...targetColumnObj.jobApplications].sort(
+        (a, b) => a.order - b.order
+      );
 
       const allJobsInTargetFiltered =
         allJobsInTargetOriginal.filter((j) => j._id !== activeId) || [];
@@ -281,6 +295,8 @@ export default function KanbanBoard({ board, userId }: KanbanBoardProps) {
       if (targetIndexInFiltered !== -1) {
         if (sourceColumn._id === targetColumnId) {
           if (sourceIndex < targetIndexInOriginal) {
+            // Removing the source shifts later jobs left. Insert after the hovered
+            // job when moving downward, rather than back before it.
             newOrder = targetIndexInFiltered + 1;
           } else {
             newOrder = targetIndexInFiltered;
@@ -313,15 +329,20 @@ export default function KanbanBoard({ board, userId }: KanbanBoardProps) {
       onDragEnd={handleDragEnd}
     >
       <div className="space-y-4">
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
         <div className="flex gap-4 overflow-x-auto pb-4">
-          {sortedColumns.map((col, key) => {
-            const config = COLUMN_CONFIG[key] || {
+          {sortedColumns.map((col, index) => {
+            const config = COLUMN_CONFIG[index] || {
               color: "bg-gray-500",
               icon: <Calendar className="h-4 w-4" />,
             };
             return (
               <DroppableColumn
-                key={key}
+                key={col._id}
                 column={col}
                 config={config}
                 boardId={board._id}
@@ -332,6 +353,7 @@ export default function KanbanBoard({ board, userId }: KanbanBoardProps) {
         </div>
       </div>
 
+      {/* A separate drag preview follows the pointer without moving the source card out of its list. */}
       <DragOverlay>
         {activeJob ? (
           <div className="opacity-50">

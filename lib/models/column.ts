@@ -1,3 +1,4 @@
+/** Persists a board's column, its stored rank, and references to JobApplications. */
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IColumn extends Document {
@@ -17,12 +18,14 @@ const ColumnSchema = new Schema<IColumn>(
       type: String,
       required: true,
     },
+    // Supports board-scoped lookups, not authorization; callers must check ownership.
     boardId: {
       type: Schema.Types.ObjectId,
       ref: "Board",
       required: true,
       index: true,
     },
+    // Stores rank only; domain/service logic owns the ordering policy.
     order: {
       type: Number,
       required: true,
@@ -40,5 +43,6 @@ const ColumnSchema = new Schema<IColumn>(
   }
 );
 
+// Reuse the compiled model during development hot reload to avoid overwrite-model errors.
 export default mongoose.models.Column ||
   mongoose.model<IColumn>("Column", ColumnSchema);

@@ -3,11 +3,9 @@
 import { Briefcase } from "lucide-react";
 import Link from "next/link";
 import { Button } from "./ui/button";
-import { getSession, signOut } from "@/lib/auth/auth";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
@@ -16,7 +14,7 @@ import SignOutButton from "./sign-out-btn";
 import { useSession } from "@/lib/auth/auth-client";
 
 export default function Navbar() {
-  const { data: session } = useSession();
+  const { data: session, isPending } = useSession();
   return (
     <nav className="border-b border-gray-200 bg-white">
       <div className="container mx-auto flex h-16 items-center px-4 justify-between">
@@ -28,19 +26,19 @@ export default function Navbar() {
           Job Tracker
         </Link>
         <div className="flex items-center gap-4">
-          {session?.user ? (
+          {isPending ? (
+            <span role="status" aria-busy="true" className="text-sm text-muted-foreground">
+              Loading account…
+            </span>
+          ) : session?.user ? (
             <>
-              <Link href="/dashboard">
-                <Button
-                  variant="ghost"
-                  className="text-gray-700 hover:text-black"
-                >
-                  Dashboard
-                </Button>
-              </Link>
+              <Button asChild variant="ghost" className="text-gray-700 hover:text-black">
+                <Link href="/dashboard">Dashboard</Link>
+              </Button>
               <DropdownMenu>
-                <DropdownMenuTrigger>
+                <DropdownMenuTrigger asChild>
                   <Button
+                    aria-label="Open account menu"
                     variant="ghost"
                     className="relative h-8 w-8 rounded-full"
                   >
@@ -69,19 +67,12 @@ export default function Navbar() {
             </>
           ) : (
             <>
-              <Link href="/sign-in">
-                <Button
-                  variant="ghost"
-                  className="text-gray-700 hover:text-black"
-                >
-                  Log In
-                </Button>
-              </Link>
-              <Link href="/sign-up">
-                <Button className="bg-primary hover:bg-primary/90">
-                  Start for free
-                </Button>
-              </Link>
+              <Button asChild variant="ghost" className="text-gray-700 hover:text-black">
+                <Link href="/sign-in">Log In</Link>
+              </Button>
+              <Button asChild className="bg-primary hover:bg-primary/90">
+                <Link href="/sign-up">Start for free</Link>
+              </Button>
             </>
           )}
         </div>

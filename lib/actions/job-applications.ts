@@ -1,263 +1,83 @@
 "use server";
 
+/**
+ * UI-facing mutation boundary: these Server Actions connect session identity,
+ * domain results, and dashboard refreshes; persistence belongs to the service/store.
+ */
+
 import { revalidatePath } from "next/cache";
 import { getSession } from "../auth/auth";
-import connectDB from "../db";
-import { Board, Column, JobApplication } from "../models";
+import { jobStore } from "../job-applications/mongoose-repository";
+import { createJobService, type ErrorCode, type Result } from "../job-applications/service";
+import { logServerEvent, type ServerEvent } from "../observability/server-logger";
+import type { CreateJobInput, UpdateJobInput } from "../job-applications/schemas";
 
-interface JobApplicationData {
-  company: string;
-  position: string;
-  location?: string;
-  notes?: string;
-  salary?: string;
-  jobUrl?: string;
-  columnId: string;
-  boardId: string;
-  tags?: string[];
-  description?: string;
+const service = createJobService(jobStore);
+const messages: Record<ErrorCode, string> = {
+  UNAUTHENTICATED: "Unauthorized",
+  INVALID_INPUT: "Invalid job application input",
+  NOT_FOUND: "Job application, board, or column not found",
+  PERSISTENCE_ERROR: "Unable to save job application. Please try again.",
+};
+
+/**
+ * Resolve the server session before invoking the service. Returned failures remain
+ * typed results; persistence failures are logged, while unexpected throws are
+ * logged and rethrown rather than converted into ordinary validation feedback.
+ */
+async function runMutation<T>(
+  operation: Extract<ServerEvent["operation"], "create" | "update" | "delete">,
+  work: (actor: string | undefined) => Promise<Result<T>>,
+): Promise<Result<T>> {
+  const startedAt = performance.now();
+  let result: Result<T>;
+  try {
+    const session = await getSession();
+    // Never derive ownership from caller input: pass the authenticated actor to
+    // the service so authorization can reach data access, not just the UI boundary.
+    // Missing identity is passed as undefined for the service to handle.
+    result = await work(session?.user?.id);
+    // Only a successful service result triggers revalidation after persistence,
+    // allowing server-rendered dashboard data to reconcile with the saved state.
+    if (result.ok) revalidatePath("/dashboard");
+  } catch (error) {
+    logServerEvent({ event: "job_mutation", operation, outcome: "failure",
+      durationMs: performance.now() - startedAt, errorType: "internal" });
+    throw error;
+  }
+  if (!result.ok && result.code === "PERSISTENCE_ERROR") {
+    logServerEvent({ event: "job_mutation", operation, outcome: "failure",
+      durationMs: performance.now() - startedAt, errorType: "persistence" });
+  }
+  return result;
 }
 
-export async function createJobApplication(data: JobApplicationData) {
-  const session = await getSession();
-
-  if (!session?.user) {
-    return { error: "Unauthorized" };
-  }
-
-  await connectDB();
-
-  const {
-    company,
-    position,
-    location,
-    notes,
-    salary,
-    jobUrl,
-    columnId,
-    boardId,
-    tags,
-    description,
-  } = data;
-
-  if (!company || !position || !columnId || !boardId) {
-    return { error: "Missing required fields" };
-  }
-
-  // Verify board ownership
-  const board = await Board.findOne({
-    _id: boardId,
-    userId: session.user.id,
-  });
-
-  if (!board) {
-    return { error: "Board not found" };
-  }
-
-  // Verify column belongs to board
-
-  const column = await Column.findOne({
-    _id: columnId,
-    boardId: boardId,
-  });
-
-  if (!column) {
-    return { error: "Column not found" };
-  }
-
-  const maxOrder = (await JobApplication.findOne({ columnId })
-    .sort({ order: -1 })
-    .select("order")
-    .lean()) as { order: number } | null;
-
-  const jobApplication = await JobApplication.create({
-    company,
-    position,
-    location,
-    notes,
-    salary,
-    jobUrl,
-    columnId,
-    boardId,
-    userId: session.user.id,
-    tags: tags || [],
-    description,
-    status: "applied",
-    order: maxOrder ? maxOrder.order + 1 : 0,
-  });
-
-  await Column.findByIdAndUpdate(columnId, {
-    $push: { jobApplications: jobApplication._id },
-  });
-
-  revalidatePath("/dashboard");
-
-  return { data: JSON.parse(JSON.stringify(jobApplication)) };
+/**
+ * Submit new application fields to the service and return its saved data, or a
+ * fixed user-facing error message instead of exposing internal failure details.
+ */
+export async function createJobApplication(data: CreateJobInput) {
+  const result = await runMutation("create", (actor) => service.create(actor, data));
+  if (!result.ok) return { error: messages[result.code] };
+  return { data: result.data };
 }
 
-export async function updateJobApplication(
-  id: string,
-  updates: {
-    company?: string;
-    position?: string;
-    location?: string;
-    notes?: string;
-    salary?: string;
-    jobUrl?: string;
-    columnId?: string;
-    order?: number;
-    tags?: string[];
-    description?: string;
-  }
-) {
-  const session = await getSession();
-
-  if (!session?.user) {
-    return { error: "Unauthorized" };
-  }
-
-  const jobApplication = await JobApplication.findById(id);
-
-  if (!jobApplication) {
-    return { error: "Job application not found" };
-  }
-
-  if (jobApplication.userId !== session.user.id) {
-    return { error: "Unauthorized" };
-  }
-
-  const { columnId, order, ...otherUpdates } = updates;
-
-  const updatesToApply: Partial<{
-    company: string;
-    position: string;
-    location: string;
-    notes: string;
-    salary: string;
-    jobUrl: string;
-    columnId: string;
-    order: number;
-    tags: string[];
-    description: string;
-  }> = otherUpdates;
-
-  const currentColumnId = jobApplication.columnId.toString();
-  const newColumnId = columnId?.toString();
-
-  const isMovingToDifferentColumn =
-    newColumnId && newColumnId !== currentColumnId;
-
-  if (isMovingToDifferentColumn) {
-    await Column.findByIdAndUpdate(currentColumnId, {
-      $pull: { jobApplications: id },
-    });
-
-    const jobsInTargetColumn = await JobApplication.find({
-      columnId: newColumnId,
-      _id: { $ne: id },
-    })
-      .sort({ order: 1 })
-      .lean();
-
-    let newOrderValue: number;
-
-    if (order !== undefined && order !== null) {
-      newOrderValue = order * 100;
-
-      const jobsThatNeedToShift = jobsInTargetColumn.slice(order);
-      for (const job of jobsThatNeedToShift) {
-        await JobApplication.findByIdAndUpdate(job._id, {
-          $set: { order: job.order + 100 },
-        });
-      }
-    } else {
-      if (jobsInTargetColumn.length > 0) {
-        const lastJobOrder =
-          jobsInTargetColumn[jobsInTargetColumn.length - 1].order || 0;
-        newOrderValue = lastJobOrder + 100;
-      } else {
-        newOrderValue = 0;
-      }
-    }
-
-    updatesToApply.columnId = newColumnId;
-    updatesToApply.order = newOrderValue;
-
-    await Column.findByIdAndUpdate(newColumnId, {
-      $push: { jobApplications: id },
-    });
-  } else if (order !== undefined && order !== null) {
-    const otherJobsInColumn = await JobApplication.find({
-      columnId: currentColumnId,
-      _id: { $ne: id },
-    })
-      .sort({ order: 1 })
-      .lean();
-
-    const currentJobOrder = jobApplication.order || 0;
-    const currentPositionIndex = otherJobsInColumn.findIndex(
-      (job) => job.order > currentJobOrder
-    );
-    const oldPositionindex =
-      currentPositionIndex === -1
-        ? otherJobsInColumn.length
-        : currentPositionIndex;
-
-    const newOrderValue = order * 100;
-
-    if (order < oldPositionindex) {
-      const jobsToShiftDown = otherJobsInColumn.slice(order, oldPositionindex);
-
-      for (const job of jobsToShiftDown) {
-        await JobApplication.findByIdAndUpdate(job._id, {
-          $set: { order: job.order + 100 },
-        });
-      }
-    } else if (order > oldPositionindex) {
-      const jobsToShiftUp = otherJobsInColumn.slice(oldPositionindex, order);
-      for (const job of jobsToShiftUp) {
-        const newOrder = Math.max(0, job.order - 100);
-        await JobApplication.findByIdAndUpdate(job._id, {
-          $set: { order: newOrder },
-        });
-      }
-    }
-
-    updatesToApply.order = newOrderValue;
-  }
-
-  const updated = await JobApplication.findByIdAndUpdate(id, updatesToApply, {
-    new: true,
-  });
-
-  revalidatePath("/dashboard");
-
-  return { data: JSON.parse(JSON.stringify(updated)) };
+/**
+ * Submit a target ID and edited fields under the session actor's identity;
+ * return updated data or a fixed message for a returned service failure.
+ */
+export async function updateJobApplication(id: string, updates: UpdateJobInput) {
+  const result = await runMutation("update", (actor) => service.update(actor, id, updates));
+  if (!result.ok) return { error: messages[result.code] };
+  return { data: result.data };
 }
 
+/**
+ * Request deletion of the target ID under the session actor's identity;
+ * return a success marker or a fixed message for a returned service failure.
+ */
 export async function deleteJobApplication(id: string) {
-  const session = await getSession();
-
-  if (!session?.user) {
-    return { error: "Unauthorized" };
-  }
-
-  const jobApplication = await JobApplication.findById(id);
-
-  if (!jobApplication) {
-    return { error: "Job application not found" };
-  }
-
-  if (jobApplication.userId !== session.user.id) {
-    return { error: "Unauthorized" };
-  }
-
-  await Column.findByIdAndUpdate(jobApplication.columnId, {
-    $pull: { jobApplications: id },
-  });
-
-  await JobApplication.deleteOne({ _id: id });
-  revalidatePath("/dashboard");
-
+  const result = await runMutation("delete", (actor) => service.delete(actor, id));
+  if (!result.ok) return { error: messages[result.code] };
   return { success: true };
 }

@@ -1,7 +1,16 @@
+/**
+ * Explicit administrative/dev data script, never an application request path.
+ * Running this module immediately seeds the database selected by connectDB's
+ * environment configuration. Verify that target before running: there is no
+ * production guard, confirmation, or authenticated request identity here.
+ * Existing user jobs are destructively replaced; never target production by mistake.
+ */
 import connectDB from "../lib/db";
 import "@/lib/models";
 import { Board, Column, JobApplication } from "@/lib/models";
 
+// Identity is hard-coded, not read from SEED_USER_ID despite the usage text below.
+// The operator must choose the intended development user; this script does not verify it.
 const USER_ID = "6929e34361b6f083d154859d";
 
 const SAMPLE_JOBS = [
@@ -149,6 +158,12 @@ const SAMPLE_JOBS = [
   },
 ];
 
+/**
+ * Reuses the user's "Job Hunt" board or delegates its creation to initializeUserBoard,
+ * then creates up to 15 fixtures in matching named columns; missing names are skipped.
+ * Existing boards/columns are not deleted. No transaction spans these writes:
+ * failures leave earlier deletions, creations, and saves in place, without rollback.
+ */
 async function seed() {
   if (!USER_ID) {
     console.error("❌ Error: SEED_USER_ID environment variable is required");
@@ -194,6 +209,8 @@ async function seed() {
       columnMap[col.name] = col._id.toString();
     });
 
+    // Deletion is user-wide, including jobs on other boards; reference cleanup below
+    // only touches this board's columns, so other boards can retain deleted job IDs.
     // Clear existing job applications for this user
     const existingJobs = await JobApplication.find({ userId: USER_ID });
     if (existingJobs.length > 0) {
@@ -202,6 +219,8 @@ async function seed() {
       );
       await JobApplication.deleteMany({ userId: USER_ID });
 
+      // Cleanup runs only when existing jobs were found; otherwise pre-existing
+      // column references are left intact and new IDs will be appended.
       // Clear job applications from columns
       for (const column of columns) {
         column.jobApplications = [];
@@ -230,6 +249,9 @@ async function seed() {
       const column = columns.find((c) => c.name === columnName);
       if (!column) continue;
 
+      // Fixture sequence assigns zero-based order within each column, independently
+      // of the column order used when loading columns. Creates are awaited one at a
+      // time, not batched: simple for small fixtures, but one write per job adds trips.
       for (let i = 0; i < jobs.length; i++) {
         const jobData = jobs[i];
         const jobApplication = await JobApplication.create({
@@ -251,6 +273,8 @@ async function seed() {
         totalCreated++;
       }
 
+      // Persist accumulated IDs once per populated column, after its job writes.
+      // A failed create/save can leave jobs without matching column references.
       await column.save();
       console.log(`✅ Added ${jobs.length} jobs to "${columnName}" column`);
     }

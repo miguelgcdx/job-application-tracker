@@ -1,3 +1,4 @@
+/** Persists application details with direct board, column, and user ownership fields. */
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IJobApplication extends Document {
@@ -37,6 +38,8 @@ const JobApplicationSchema = new Schema<IJobApplication>(
       required: true,
       default: "applied",
     },
+    // These reference/ownership indexes support scoped lookups; they do not authorize
+    // access or enforce agreement between board, column, and user ownership.
     columnId: {
       type: Schema.Types.ObjectId,
       ref: "Column",
@@ -54,6 +57,7 @@ const JobApplicationSchema = new Schema<IJobApplication>(
       required: true,
       index: true,
     },
+    // Stores rank only; domain/service logic owns insertion and reordering policy.
     order: {
       type: Number,
       required: true,
@@ -85,5 +89,6 @@ const JobApplicationSchema = new Schema<IJobApplication>(
   }
 );
 
+// Reuse the compiled model during development hot reload to avoid overwrite-model errors.
 export default mongoose.models.JobApplication ||
   mongoose.model<IJobApplication>("JobApplication", JobApplicationSchema);

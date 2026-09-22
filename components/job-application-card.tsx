@@ -1,8 +1,14 @@
 "use client";
 
+/**
+ * Presents one application and its edit, move, and delete controls alongside
+ * parent-supplied drag bindings. Local form/dialog state and event handlers
+ * require this Client Component boundary; persistence stays behind Server Actions.
+ */
+
 import { JobApplication, Column } from "@/lib/models/models.types";
 import { Card, CardContent } from "./ui/card";
-import { Edit2, ExternalLink, MoreVertical, Plus, Trash2 } from "lucide-react";
+import { Edit2, ExternalLink, MoreVertical, Trash2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,11 +31,12 @@ import {
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
-import React, { useState } from "react";
+import { useState, type FormEvent, type HTMLAttributes } from "react";
 interface JobApplicationCardProps {
   job: JobApplication;
   columns: Column[];
-  dragHandleProps?: React.HTMLAttributes<HTMLElement>;
+  // Despite the name, these bindings are spread onto the whole Card, not a separate handle.
+  dragHandleProps?: HTMLAttributes<HTMLElement>;
 }
 
 export default function JobApplicationCard({
@@ -38,6 +45,9 @@ export default function JobApplicationCard({
   dragHandleProps,
 }: JobApplicationCardProps) {
   const [isEditing, setIsEditing] = useState(false);
+  // One error is shown in the editor when open, otherwise on the card.
+  // There is no pending state or duplicate-submit guard here while actions await.
+  const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     company: job.company,
     position: job.position,
@@ -50,8 +60,16 @@ export default function JobApplicationCard({
     description: job.description || "",
   });
 
-  async function handleUpdate(e: React.FormEvent) {
+  /**
+   * Sends the local draft across the Server Action boundary. Client-side input
+   * handling cannot replace server validation, session checks, ownership
+   * authorization, or transactional persistence.
+   * Returned errors and thrown failures keep the draft open; only a successful
+   * action response closes it automatically (manual cancel remains available).
+   */
+  async function handleUpdate(e: FormEvent) {
     e.preventDefault();
+    setError(null);
     try {
       const result = await updateJobApplication(job._id, {
         ...formData,
@@ -61,33 +79,42 @@ export default function JobApplicationCard({
           .filter((tag) => tag.length > 0),
       });
 
-      if (!result.error) {
+      if (result.error) {
+        setError(`Failed to update job application: ${result.error}`);
+      } else {
         setIsEditing(false);
       }
-    } catch (err) {
-      console.error("Failed to move job application: ", err);
+    } catch {
+      setError("Failed to update job application. Please try again.");
     }
   }
 
+  // Delete and move report failures without optimistically removing or relocating
+  // this card; the displayed application continues to come from parent props.
   async function handleDelete() {
+    setError(null);
     try {
       const result = await deleteJobApplication(job._id);
 
       if (result.error) {
-        console.error("Failed to delete job application:", result.error);
+        setError(`Failed to delete job application: ${result.error}`);
       }
-    } catch (err) {
-      console.error("Failed to move job application: ", err);
+    } catch {
+      setError("Failed to delete job application. Please try again.");
     }
   }
 
   async function handleMove(newColumnId: string) {
+    setError(null);
     try {
       const result = await updateJobApplication(job._id, {
         columnId: newColumnId,
       });
-    } catch (err) {
-      console.error("Failed to move job application: ", err);
+      if (result.error) {
+        setError(`Failed to move job application: ${result.error}`);
+      }
+    } catch {
+      setError("Failed to move job application. Please try again.");
     }
   }
   return (
@@ -97,6 +124,11 @@ export default function JobApplicationCard({
         {...dragHandleProps}
       >
         <CardContent className="p-4">
+          {error && !isEditing && (
+            <p role="alert" className="mb-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
           <div className="flex items-start justify-between gap-2">
             <div className="flex-1 min-w-0">
               <h3 className="font-semibold text-sm mb-1">{job.position}</h3>
@@ -139,7 +171,12 @@ export default function JobApplicationCard({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setIsEditing(true)}>
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setError(null);
+                      setIsEditing(true);
+                    }}
+                  >
                     <Edit2 className="mr-2 h-4 w-4" />
                     Edit
                   </DropdownMenuItem>
@@ -147,9 +184,9 @@ export default function JobApplicationCard({
                     <>
                       {columns
                         .filter((c) => c._id !== job.columnId)
-                        .map((column, key) => (
+                        .map((column) => (
                           <DropdownMenuItem
-                            key={key}
+                            key={column._id}
                             onClick={() => handleMove(column._id)}
                           >
                             Move to {column.name}
@@ -178,6 +215,11 @@ export default function JobApplicationCard({
             <DialogDescription>Track a new job application</DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={handleUpdate}>
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">

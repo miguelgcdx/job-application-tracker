@@ -1,5 +1,7 @@
 "use client";
 
+// Form state, submit events, and useRouter require a client boundary.
+
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -42,9 +44,10 @@ export default function SignUp() {
       if (result.error) {
         setError(result.error.message ?? "Failed to sign up");
       } else {
+        // Navigation is UX, not authorization; protected server entry points must verify the session.
         router.push("/dashboard");
       }
-    } catch (err) {
+    } catch {
       setError("An unexpected error occurred");
     } finally {
       setLoading(false);
@@ -65,7 +68,10 @@ export default function SignUp() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <CardContent className="space-y-4">
             {error && (
-              <div className="rounded-md bg-destructive/15 p-3 text-sm text-destructive">
+              <div
+                role="alert"
+                className="rounded-md bg-destructive/15 p-3 text-sm text-destructive"
+              >
                 {error}
               </div>
             )}

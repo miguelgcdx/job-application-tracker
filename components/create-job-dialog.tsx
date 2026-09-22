@@ -1,5 +1,11 @@
 "use client";
 
+/**
+ * Collects a new application for the selected board and column. This Client
+ * Component owns interactive dialog/form state and browser submit handling;
+ * persistence is delegated to a Server Action.
+ */
+
 import { Plus } from "lucide-react";
 import { Button } from "./ui/button";
 import {
@@ -14,13 +20,15 @@ import {
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
-import React, { useState } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { createJobApplication } from "@/lib/actions/job-applications";
 
 interface CreateJobApplicationDialogProps {
   columnId: string;
   boardId: string;
 }
+
+const SAVE_ERROR = "Unable to add application. Please try again.";
 
 const INITIAL_FORM_DATA = {
   company: "",
@@ -37,13 +45,29 @@ export default function CreateJobApplicationDialog({
   columnId,
   boardId,
 }: CreateJobApplicationDialogProps) {
+  // Draft values, visibility, and save feedback live locally, not in persisted data.
   const [open, setOpen] = useState<boolean>(false);
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The ref blocks duplicate submissions immediately; pending drives rendered feedback.
+  const submitting = useRef(false);
 
-  async function handleSubmit(e: React.FormEvent) {
+  /**
+   * Native required/URL constraints provide browser feedback before submission.
+   * They do not replace server validation, authentication, ownership checks, or
+   * transaction guarantees: client-supplied values and IDs remain untrusted.
+   */
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (submitting.current) return;
+    submitting.current = true;
+    setPending(true);
+    setError(null);
 
     try {
+      // Cross the Server Action boundary with the draft and target IDs, converting
+      // comma-separated tags to trimmed, nonempty strings (without deduplication).
       const result = await createJobApplication({
         ...formData,
         columnId,
@@ -55,19 +79,33 @@ export default function CreateJobApplicationDialog({
       });
 
       if (!result.error) {
+        // Only a successful save clears the draft and automatically closes the dialog;
+        // failures retain entered values so the user can retry without retyping.
         setFormData(INITIAL_FORM_DATA);
         setOpen(false);
       } else {
-        console.error("Failed to create job: ", result.error);
+        // Returned errors and thrown failures share generic, user-facing feedback.
+        setError(SAVE_ERROR);
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      setError(SAVE_ERROR);
+    } finally {
+      // Restore submission/close controls after either success or failure.
+      submitting.current = false;
+      setPending(false);
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        // Ignore dismissal while saving; ordinary close/reopen preserves the draft
+        // and any error. Only the successful-save branch resets the form values.
+        if (!submitting.current) setOpen(nextOpen);
+      }}
+    >
+      <DialogTrigger asChild>
         <Button
           variant="outline"
           className="w-full mb-4 justify-start text-muted-foreground border-dashed border-2 hover:border-solid hover:bg-muted/50"
@@ -81,7 +119,7 @@ export default function CreateJobApplicationDialog({
           <DialogTitle>Add Job Application</DialogTitle>
           <DialogDescription>Track a new job application</DialogDescription>
         </DialogHeader>
-        <form className="space-y-4" onSubmit={handleSubmit}>
+        <form className="space-y-4" onSubmit={handleSubmit} aria-busy={pending}>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -178,15 +216,19 @@ export default function CreateJobApplicationDialog({
             </div>
           </div>
 
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
             <Button
               type="button"
               variant="outline"
               onClick={() => setOpen(false)}
+              disabled={pending}
             >
               Cancel
             </Button>
-            <Button type="submit">Add Application</Button>
+            <Button type="submit" disabled={pending}>
+              {pending ? "Adding application…" : "Add Application"}
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>

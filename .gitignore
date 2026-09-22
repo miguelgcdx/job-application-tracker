@@ -30,8 +30,9 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# Keep real environment files private; track only the root template.
 .env*
+!/.env.example
 
 # vercel
 .vercel
@@ -39,3 +40,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# Local Pi runtime state
+.atl/
+
+# Playwright artifacts
+/playwright-report/
+/test-results/
+
+# Vitest artifacts
+/.vitest/

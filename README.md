@@ -2,6 +2,8 @@
 
 A full-stack job application tracking system built with Next.js, featuring a Kanban board interface for managing your job search. This project is part of a YouTube tutorial series where you'll learn how to build this application step by step.
 
+Explore the code with the [Architecture and learning guide](docs/architecture-and-learning-guide.md).
+
 ## 🎥 Tutorial
 
 This project accompanies a YouTube tutorial series. Follow along to learn how to build a complete job application tracker with authentication, drag-and-drop functionality, and real-time updates.
@@ -22,9 +24,10 @@ This project accompanies a YouTube tutorial series. Follow along to learn how to
 
 ### Prerequisites
 
-- Node.js 18+ installed
-- MongoDB database (local or cloud)
-- npm, yarn, pnpm, or bun
+- Node.js 22.x installed (`.node-version`; supported range: `>=22 <23`)
+- MongoDB replica set or sharded deployment with transaction support
+  (standalone MongoDB servers are not supported)
+- pnpm 12.4.1
 
 ### Installation
 
@@ -38,19 +41,18 @@ cd job-application-tracker
 2. Install dependencies:
 
 ```bash
-npm install
+pnpm install --frozen-lockfile
 ```
 
-3. Create a `.env.local` file in the root directory:
-
-```env
-MONGODB_URI=your_mongodb_connection_string
-```
+3. Supply the variables in the [environment contract](#-environment-variables)
+through your local process environment or approved secret manager. Do not commit
+credentials. This README is the environment template; no environment file is
+required to document the contract.
 
 4. Run the development server:
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 5. Open [http://localhost:3000](http://localhost:3000) in your browser.
@@ -82,7 +84,7 @@ The application uses three main models with relationships:
 
 - Represents a user's job hunt board
 - Contains references to columns
-- One board per user
+- The app uses a default "Job Hunt" board; the schema does not enforce one board per user
 
 **Column Model** (`column.ts`):
 
@@ -114,7 +116,7 @@ export const auth = betterAuth({
     user: {
       create: {
         after: async (user) => {
-          // Automatically create a board when user signs up
+          // Attempt default-board initialization after account creation
           await initializeUserBoard(user.id);
         },
       },
@@ -126,7 +128,7 @@ export const auth = betterAuth({
 **Key Features:**
 
 - Email/password authentication
-- Automatic board creation on signup
+- Default-board initialization attempted on signup (not transactional or concurrency-safe)
 - Session management with cookie caching
 
 ### 4. Server Actions (`lib/actions/job-applications.ts`)
@@ -224,7 +226,7 @@ The seed script populates the database with sample job applications.
 For the seeding file, **strongly recommend using batch insert** (`await JobApplication.insertMany(applications)`) instead of creating jobs one by one. This reduces the number of round trips to MongoDB and significantly improves performance.
 
 **Current Implementation:**
-The current seed script creates jobs individually in a loop. While this works, it's not optimal for large datasets.
+The current seed script uses sequential writes without rollback. A failure can leave partial data; it is also not optimized for large datasets.
 
 **Recommended Approach:**
 
@@ -268,14 +270,14 @@ for (const column of columns) {
 
 **Benefits:**
 
-- Single database round trip instead of N trips
-- Faster execution (especially with many jobs)
-- Atomic operation reduces partial failures
-- Better for production seeding scenarios
+- Fewer round trips for job creation; column-reference saves still require separate writes
+- Potentially faster execution with many jobs
+
+Batch insertion alone is not atomic across documents or the later column updates. The example is a performance suggestion, not a rollback guarantee or production-safe seed; related writes would need a shared transaction for atomicity.
 
 ### 9. User Board Initialization (`lib/init-user-board.ts`)
 
-When a user signs up, a default board is created with predefined columns:
+When a user signs up, initialization attempts to create a default board with predefined columns:
 
 - Wish List
 - Applied
@@ -283,7 +285,7 @@ When a user signs up, a default board is created with predefined columns:
 - Offer
 - Rejected
 
-This ensures every user starts with a functional board structure.
+Initialization is not transactional or idempotent under concurrency: simultaneous calls can create duplicates, and failed writes can leave an incomplete board. An existing board is returned without repairing missing columns, so complete initialization is not guaranteed.
 
 ## 🎯 Key Learning Points
 
@@ -297,17 +299,66 @@ This ensures every user starts with a functional board structure.
 
 ## 📝 Available Scripts
 
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run start` - Start production server
-- `npm run lint` - Run ESLint
-- `npm run seed:jobs` - Seed database with sample jobs
+- `pnpm dev` - Start development server
+- `pnpm build` - Build for production
+- `pnpm start` - Start production server
+- `pnpm lint` - Run ESLint
+- `pnpm test` - Run Vitest unit/component tests and mocked integration seams
+- `pnpm test:coverage` - Run Vitest with coverage
+- `pnpm exec tsc --noEmit --incremental false` - Check TypeScript without build output
+- `pnpm test:e2e` - Run Playwright (requires approved browsers, configuration, and isolated services)
+- `pnpm seed:jobs` - Seed database with sample jobs (only an explicitly approved non-production database)
 
 ## 🔐 Environment Variables
 
-Required environment variables:
+Keep local, Vercel Preview, and Vercel Production configuration separate. Preview
+must use an isolated non-production database and matching auth URLs. Configure
+secrets through approved secret storage, never in source code or `NEXT_PUBLIC_*`.
+No real values are included here.
 
-- `MONGODB_URI` - MongoDB connection string
+| Variable | Exposure | Requiredness and purpose | Consumed when |
+| --- | --- | --- | --- |
+| `MONGODB_URI` | Secret; server only | Required MongoDB connection string. Use a replica set or sharded cluster with transaction support, not standalone MongoDB. | Server runtime **and build**: server auth currently connects at module initialization. |
+| `BETTER_AUTH_SECRET` | Secret; server only | Required stable, securely generated auth signing/encryption secret; at least 32 characters. | Server runtime; also provide during build-time auth initialization. |
+| `BETTER_AUTH_URL` | Non-secret URL; server configuration | Required auth base URL for the selected environment. Must match the deployed app origin. | Server runtime; also provide during build-time auth initialization. |
+| `NEXT_PUBLIC_BETTER_AUTH_URL` | Public; browser-visible | Required client auth base URL matching `BETTER_AUTH_URL`. | Inlined at build; used by the browser at runtime. |
+| `NEXT_PUBLIC_SENTRY_DSN` | Public; browser-visible, not an upload token | Optional HTTPS Sentry ingestion DSN. Missing/invalid DSN disables SDK initialization. | Inlined at build for browser runtime; also read by server/edge runtime. |
+| `SENTRY_ORG` | Non-secret; build-only identifier | Required only for source-map uploads, together with project and token. | Build configuration/upload only. |
+| `SENTRY_PROJECT` | Non-secret; build-only identifier | Required only for source-map uploads, together with org and token. | Build configuration/upload only. |
+| `SENTRY_AUTH_TOKEN` | Secret; CI/build only | Optional source-map upload credential. Restrict scope; never expose to browser code or application runtime. Uploads are disabled unless org, project, and token are all present. | Build upload only. |
+| `SENTRY_RELEASE` | Non-secret; public telemetry label | Optional explicit Sentry release; takes precedence over commit SHA. Use at most 64 letters, digits, dots, underscores, or hyphens, starting with a letter/digit. | Build and server/edge runtime; sanitized label is inlined for the browser. |
+| `VERCEL_GIT_COMMIT_SHA` | Non-secret; public release identifier | Vercel-provided Sentry release fallback; structured logs accept only a full 40-character hexadecimal commit SHA. Optional locally. | Build and server/edge runtime. |
+| `VERCEL_ENV` | Non-secret; public environment label | Vercel-provided deployment environment (`development`, `preview`, or `production`); optional locally, where `NODE_ENV` is the fallback. | Build and server/edge runtime; bounded label is inlined for browser telemetry. |
+
+`next.config.ts` derives `NEXT_PUBLIC_SENTRY_ENVIRONMENT` and
+`NEXT_PUBLIC_SENTRY_RELEASE`; do not supply these separately. Public variables and
+derived labels are baked into client bundles: change them through a rebuild and
+redeploy. Keep release/environment labels aligned between build and runtime.
+Sentry filters event data, disables default PII and replay, and uses bounded trace
+sampling; configuration alone does not prove ingestion or source-map resolution.
+
+### Vercel and production checks
+
+Select **Node.js 22.x** in the Vercel project settings. Use pnpm exclusively:
+
+- Install command: `pnpm install --frozen-lockfile`
+- Build command: `pnpm build`
+- Local production server: `pnpm start` (after a successful build)
+- CI checks: `pnpm test`, `pnpm lint`, `pnpm exec tsc --noEmit --incremental false`
+- Lockfile consistency: `pnpm install --lockfile-only --frozen-lockfile`
+- Authorized isolated browser smoke checks: `pnpm test:e2e`
+
+The current module-level database/auth initialization means a build can require
+reachable, appropriately scoped MongoDB and auth configuration; a successful unit
+test run is not build or database evidence. Use a transaction-capable isolated
+service for previews/tests and never run fixtures against production.
+
+The canonical production domain is **deferred**. Metadata intentionally has no
+canonical URL or `metadataBase`; choose the domain before configuring production
+auth origins and canonical metadata. Deployment, real authentication/persistence,
+browser journeys, Sentry ingestion/source maps, and rollback remain unverified
+until credentials, browser tooling, and deployment access are explicitly supplied
+and those checks are run.
 
 ## 📖 Project Structure
 

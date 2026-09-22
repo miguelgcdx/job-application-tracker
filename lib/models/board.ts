@@ -1,3 +1,4 @@
+/** Persists a user's board and its Column references, the root of the board graph. */
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IBoard extends Document {
@@ -14,6 +15,7 @@ const BoardSchema = new Schema<IBoard>(
       type: String,
       required: true,
     },
+    // Supports owner-scoped lookups; callers must still enforce authorization.
     userId: {
       type: String,
       required: true,
@@ -31,5 +33,6 @@ const BoardSchema = new Schema<IBoard>(
   }
 );
 
+// Reuse the compiled model during development hot reload to avoid overwrite-model errors.
 export default mongoose.models.Board ||
   mongoose.model<IBoard>("Board", BoardSchema);
